@@ -1,4 +1,12 @@
-/* client.c -- updated UDP client */
+/*  
+    Daniel Vega
+    client.c 
+    Sends 10 files to server using UDP. 
+    Sends 1-3 lines at a time from a random
+    file. 
+    Uses ACKs to make sure everything is 
+    received in order.
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,14 +22,14 @@
 
 #define SERVERPORT "7777"
 #define MAXBUFLEN 65536
-#define MAXFILES 10
+#define numFiles 10
 #define MAX_LINES_PER_PACKET 3
 
 struct udp_packet {
     char filename[32];
-    int total_lines;
-    int start_line_number;
-    int num_lines;
+    int totalLines;
+    int currentLineNum;
+    int numIncomingLines;
     char lines[MAX_LINES_PER_PACKET][256];
     int packetNum;
 };
@@ -41,7 +49,8 @@ void *get_in_addr(struct sockaddr *sa) {
 int main(int argc, char *argv[]) {
 
     int sockfd; //socket file descriptor
-    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, p is a pointer to iteratethrough servinfo
+    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, 
+                                             //p is a pointer to iteratethrough servinfo
     int rv;//return value for getaddrinfo. used for error checking
     struct sockaddr_storage their_addr;//the address of the server
     socklen_t addr_len; //size of server's address
@@ -57,7 +66,6 @@ int main(int argc, char *argv[]) {
     //UDP 
     hints.ai_socktype = SOCK_DGRAM;
 
-    //error checking 
     if ((rv = getaddrinfo(argv[1], SERVERPORT, &hints, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         return 1;
@@ -84,13 +92,13 @@ int main(int argc, char *argv[]) {
     setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
 
 
-    FILE *files[MAXFILES];
+    FILE *files[numFiles];
 
-    char fileNames[MAXFILES][32]; //array to hold fileNames
-    int numLines[MAXFILES]; //array to hold total # of lines per file
-    int sentLines[MAXFILES];  //array to hold # of lines sent per file so far
+    char fileNames[numFiles][32]; //array to hold fileNames
+    int numLines[numFiles]; //array to hold total # of lines per file
+    int sentLines[numFiles];  //array to hold # of lines sent per file so far
 
-    for (int i = 0; i < MAXFILES; i++) {
+    for (int i = 0; i < numFiles; i++) {
 
         snprintf(fileNames[i], sizeof(fileNames[i]), "file_%d.txt", i+1);
 
@@ -115,26 +123,25 @@ int main(int argc, char *argv[]) {
         }
 
         fseek(files[i], 0, SEEK_SET); //set pointer to beginning
-
-        sentLines[i] = 0;  //set the sent lines to 0 
+        sentLines[i] = 0; 
     }
 
     srand(time(NULL)); //seed the rng to the current time
-    int filesSent[MAXFILES] = {0};  //array to keep track of which files were fully sent
-    int total_files_sent = 0;  //array to keep track of how many files were sent
+    int filesSent[numFiles] = {0};  //array to keep track of which files were fully sent
+    int filesCompleted = 0;  //array to keep track of how many files were sent
     int currPacket = 0;
 
-    while (total_files_sent < MAXFILES) {
+    while (filesCompleted < numFiles) {
 
         int fileIndex = -1;
         while (fileIndex == -1) {
 
-            int random_file = rand() % MAXFILES;  //choose rand file
-            //protect against empty files and check if the file was fully sent yet
+            int randomFile = rand() % numFiles;  //choose rand file
+            //check if the file was fully sent yet
             //if the file was fully sent, try another
             //can be more efficient. Maybe optimize later
-            if (numLines[random_file] > 0 && !filesSent[random_file]) {
-                fileIndex = random_file;
+            if (numLines[randomFile] > 0 && !filesSent[randomFile]) {
+                fileIndex = randomFile;
             }
         }
 
@@ -145,7 +152,7 @@ int main(int argc, char *argv[]) {
         snprintf(pkt.filename, sizeof(pkt.filename), "%s", fileNames[fileIndex]);
 
         //set the start line. dependent on how many lines were already sent
-        pkt.start_line_number = sentLines[fileIndex];
+        pkt.currentLineNum = sentLines[fileIndex];
 
         //generate a random # from 1-3 to determine how many lines to send
         //could optimize by capping it with the delta of lines sent and total lines in file
@@ -161,43 +168,40 @@ int main(int argc, char *argv[]) {
             i++;
         }
 
-        pkt.num_lines = i;
+        pkt.numIncomingLines = i;
 
         struct ack_packet ack;
         addr_len = sizeof their_addr;
         ack.acki = -1;
-        //sends the packet and throws an error if one occurs 
+        //loop to resend packet until the server acknowledges it
         while(ack.acki != currPacket){
             //send packet
             if (sendto(sockfd, &pkt, sizeof(pkt), 0, p->ai_addr, p->ai_addrlen) == -1) {
                 perror("sendto");
                 exit(1);
             }
-
-            //usleep(5000); //delay 
-            /*wait for ack packet*/
-            //struct ack_packet ack;
-            //addr_len = sizeof their_addr;
-
+            //did we receive ACK?
             int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0,
                                     (struct sockaddr *)&their_addr, &addr_len);
             if (numbytes == -1) {
                 printf("Timeout. resending %d\n", pkt.packetNum);
                 continue;
             }
-            if(ack.acki != currPacket){
-                perror("Incorrect ACK");
+            //if the server somehow sends an ACK from a packet the client hasn't sent yet
+            //should be impossible given our code, unless another client sent packet(s) to the server
+            if(ack.acki > currPacket){
+                printf("client: Server acknowledged a packet that wasn't sent yet?");
                 exit(1);
             }
-            printf("client: received ACK for packet %d\n", ack.acki);
+            printf("client: ACK received for %d\n", ack.acki);
         }
         //increment the lines set var of curr file
-            sentLines[fileIndex] += i;
+        sentLines[fileIndex] += i;
 
         //check and mark if the file was fully sent
         if (sentLines[fileIndex] == numLines[fileIndex]) {
             filesSent[fileIndex] = 1;
-            total_files_sent++;
+            filesCompleted++;
         } 
         currPacket++;
     }
@@ -208,7 +212,7 @@ int main(int argc, char *argv[]) {
     snprintf(end_pkt.filename, sizeof(end_pkt.filename), "END");
     sendto(sockfd, &end_pkt, sizeof(end_pkt), 0, p->ai_addr, p->ai_addrlen);
 
-    printf("client: finished sending files. Waiting to receive combined file...\n");
+    printf("client: All files sent. Waiting for server to send combined file.\n");
 
     addr_len = sizeof their_addr;
     char recv_buf[MAXBUFLEN];
@@ -226,7 +230,7 @@ int main(int argc, char *argv[]) {
             printf("client: received DONE signal, finished receiving file.\n");
             break;
         }
-        //write data to file 
+        
         fprintf(combined, "%s", recv_buf);
     }
 
