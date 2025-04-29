@@ -24,6 +24,11 @@ struct udp_packet {
     int start_line_number;
     int num_lines;
     char lines[MAX_LINES_PER_PACKET][256]; 
+    int packetNum;
+};
+
+struct ack_packet {
+    int acki;
 };
 
 //returns pointer to address and allows for program to work with ipv4 and 6
@@ -83,7 +88,8 @@ int main(void) {
     addr_len = sizeof their_addr;
 
     int file_count = 0; //track the number of unique files received
-
+    static int prevAck = -1;
+    static int ack_counter = 0;  
     //infinite loop because files can be of any size, and each packet can only contain 3 lines 
     while (1) {
 
@@ -102,11 +108,32 @@ int main(void) {
             break;
         }
 
-        printf("server: received packet from %s, lines %d to %d of %s\n",
-               inet_ntoa(((struct sockaddr_in*)&their_addr)->sin_addr),
-               pkt.start_line_number,
-               pkt.start_line_number + pkt.num_lines - 1,
-               pkt.filename);
+        printf("server: received packet %d from %s, lines %d to %d of %s\n",
+            pkt.packetNum,
+            inet_ntoa(((struct sockaddr_in*)&their_addr)->sin_addr),
+            pkt.start_line_number,
+            pkt.start_line_number + pkt.num_lines - 1,
+            pkt.filename);
+
+        //if the client resends prev ACk
+        //i.e if the client never got the server's prev ACK. 
+        //resend prev ack and don't add duplicate lines
+        if(pkt.packetNum == prevAck){
+            struct ack_packet ack; 
+            ack.acki = prevAck;
+
+            if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+                perror("server: sendto ack");
+                exit(1);
+            }
+            continue;
+        } else if(pkt.packetNum > prevAck + 1){
+            printf("packet from the future received? %d", pkt.packetNum);
+            exit(2); //should be impossible with the way client and server are setup
+        } else if(pkt.packetNum < prevAck){
+            printf("server: received old packet: %d", pkt.packetNum);
+            continue; //assume it's an old packet that got lost in traffic and ignore it 
+        }
 
         //check if the filename has been received before
         int fileIndex = -1;
@@ -133,7 +160,16 @@ int main(void) {
         //forces a save to memory 
         fflush(fileMap[fileIndex]);
 
-        /*TODO: add logic to send an ACK packet to the client*/
+        /*send ack packet*/
+        struct ack_packet ack;
+        ack.acki = ack_counter++;
+        prevAck++;
+
+        if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+            perror("server: sendto ack");
+            exit(1);
+        }
+        
     }
 
     //close all files
@@ -155,7 +191,6 @@ int main(void) {
             while (fgets(line, sizeof(line), f)) { 
                 fputs(line, final); 
             }
-
             fclose(f);
         }
     }
