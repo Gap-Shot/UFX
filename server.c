@@ -1,4 +1,12 @@
-/* server.c -- updated UDP server */
+/*  
+    Daniel Vega
+    server.c 
+    Takes 10 files from the client. Then,
+    combines them into one file, in order 
+    and sends the combined file to the client.
+    Uses ACKs to make sure everything is received
+    in order.
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,14 +23,14 @@
 
 #define PORT "7777"    
 #define MAXBUFLEN 65536  
-#define MAXFILES 10
+#define numFiles 10
 #define MAX_LINES_PER_PACKET 3
 
 struct udp_packet {
     char filename[32];
-    int total_lines; 
-    int start_line_number;
-    int num_lines;
+    int totalLines; 
+    int currentLineNum;
+    int numIncomingLines;
     char lines[MAX_LINES_PER_PACKET][256]; 
     int packetNum;
 };
@@ -41,14 +49,15 @@ void *get_in_addr(struct sockaddr *sa) {
 
 int main(void) {
 
-    int sockfd; //socket file descriptor
-    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, p is a pointer to iterate through servinfo
+    int sockfd; 
+    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, 
+                                        //p is a pointer to iterate through servinfo
     struct sockaddr_storage their_addr; //the client's address
     socklen_t addr_len; //size of client address
     int rv; //return value for getaddrinfo. used for error checking
 
-    FILE *fileMap[MAXFILES] = {NULL};
-    char fileNames[MAXFILES][32];
+    FILE *fileMap[numFiles] = {NULL};
+    char fileNames[numFiles][32];
 
     memset(&hints, 0, sizeof hints);
     //can be either ipv4 or 6
@@ -111,8 +120,9 @@ int main(void) {
         printf("server: received packet %d from %s, lines %d to %d of %s\n",
             pkt.packetNum,
             inet_ntoa(((struct sockaddr_in*)&their_addr)->sin_addr),
-            pkt.start_line_number,
-            pkt.start_line_number + pkt.num_lines - 1,
+            pkt.currentLineNum,
+            pkt.currentLineNum + pkt.numIncomingLines
+     - 1,
             pkt.filename);
 
         //if the client resends prev ACk
@@ -145,7 +155,7 @@ int main(void) {
         }
 
         //if it's a new filename, add it to the list and open a new file for it
-        if (fileIndex == -1 && file_count < MAXFILES) {
+        if (fileIndex == -1 && file_count < numFiles) {
             fileIndex = file_count;
             snprintf(fileNames[fileIndex], sizeof(fileNames[fileIndex]), "%s", pkt.filename);
             fileMap[fileIndex] = fopen(fileNames[fileIndex], "w+");
@@ -153,7 +163,8 @@ int main(void) {
         }
 
         //add new lines to the correct file
-        for (int i = 0; i < pkt.num_lines; i++) {
+        for (int i = 0; i < pkt.numIncomingLines
+; i++) {
             fprintf(fileMap[fileIndex], "%s\n", pkt.lines[i]);
         }
         
@@ -174,14 +185,14 @@ int main(void) {
     }
 
     //close all files
-    for (int i = 0; i < MAXFILES; i++) {
+    for (int i = 0; i < numFiles; i++) {
         if (fileMap[i]) fclose(fileMap[i]);
     }
 
     //now that all the files were received, combine them into the file that will be sent back
     FILE *final = fopen("combined.txt", "w+");
 
-    for (int i = 0; i < MAXFILES; i++) {
+    for (int i = 0; i < numFiles; i++) {
         if (strlen(fileNames[i]) > 0) {
             FILE *f = fopen(fileNames[i], "r");
    
