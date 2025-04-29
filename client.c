@@ -1,4 +1,4 @@
-/* client.c -- updated UDP client */
+/* server.c -- updated UDP server */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,200 +10,212 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
-#include <time.h>
+#include <sys/wait.h> 
+#include <signal.h>
 
-#define SERVERPORT "7777"
-#define MAXBUFLEN 65536
+#define PORT "7777"    
+#define MAXBUFLEN 65536  
 #define MAXFILES 10
 #define MAX_LINES_PER_PACKET 3
 
 struct udp_packet {
     char filename[32];
-    int total_lines;
+    int total_lines; 
     int start_line_number;
     int num_lines;
-    char lines[MAX_LINES_PER_PACKET][256];
+    char lines[MAX_LINES_PER_PACKET][256]; 
+    int packetNum;
+};
+
+struct ack_packet {
+    int acki;
 };
 
 //returns pointer to address and allows for program to work with ipv4 and 6
 void *get_in_addr(struct sockaddr *sa) {
-    if (sa->sa_family == AF_INET)
-        return &(((struct sockaddr_in*)sa)->sin_addr); 
- 
+    if (sa->sa_family == AF_INET) 
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+        
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
-int main(int argc, char *argv[]) {
+int main(void) {
 
     int sockfd; //socket file descriptor
-    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, p is a pointer to iteratethrough servinfo
-    int rv;//return value for getaddrinfo. used for error checking
-    struct sockaddr_storage their_addr;//the address of the server
-    socklen_t addr_len; //size of server's address
+    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, p is a pointer to iterate through servinfo
+    struct sockaddr_storage their_addr; //the client's address
+    socklen_t addr_len; //size of client address
+    int rv; //return value for getaddrinfo. used for error checking
 
-    if (argc != 2) {
-        fprintf(stderr, "must supply server's ipaddress/hostname when executing (./client xxx.xxx.xxx.xxx\n");
-        exit(1);
-    }
+    FILE *fileMap[MAXFILES] = {NULL};
+    char fileNames[MAXFILES][32];
 
     memset(&hints, 0, sizeof hints);
-    //can be either ipv4 or 6 
-    hints.ai_family = AF_UNSPEC;
-    //UDP 
+    //can be either ipv4 or 6
+    hints.ai_family = AF_UNSPEC; 
+    //UDP
     hints.ai_socktype = SOCK_DGRAM;
+    //passive
+    hints.ai_flags = AI_PASSIVE;
 
-    //error checking 
-    if ((rv = getaddrinfo(argv[1], SERVERPORT, &hints, &servinfo)) != 0) {
+    //error handling
+    if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         return 1;
     }
 
-
-    //loop to create socket 
+    //loop to create socket and bind it 
     for (p = servinfo; p != NULL; p = p->ai_next) {
         if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
-            perror("client: socket");
+            perror("server: socket");
+            continue;
+        }
+        if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+            close(sockfd);
+            perror("server: bind"); 
             continue;
         }
         break;
     }
 
     if (p == NULL) {
-        fprintf(stderr, "client: failed to create socket\n");
+        fprintf(stderr, "server: failed to bind socket\n");
         return 2;
     }
 
-    FILE *files[MAXFILES];
+    freeaddrinfo(servinfo);
+    printf("server: waiting to recvfrom...\n");
+    addr_len = sizeof their_addr;
 
-    char fileNames[MAXFILES][32]; //array to hold fileNames
-    int numLines[MAXFILES]; //array to hold total # of lines per file
-    int sentLines[MAXFILES];  //array to hold # of lines sent per file so far
+    int file_count = 0; //track the number of unique files received
+    static int prevAck = -1;
+    static int ack_counter = 0;  
+    //infinite loop because files can be of any size, and each packet can only contain 3 lines 
+    while (1) {
 
-    for (int i = 0; i < MAXFILES; i++) {
+        struct udp_packet pkt;
 
-        snprintf(fileNames[i], sizeof(fileNames[i]), "file_%d.txt", i+1);
+        int numbytes = recvfrom(sockfd, &pkt, sizeof pkt, 0, (struct sockaddr *)&their_addr, &addr_len);
 
-        files[i] = fopen(fileNames[i], "r");
+        if (numbytes == -1) { 
+            perror("recvfrom");
+            exit(1);
+        }
+        
+        //end loop once an end packet is received
+        if (strcmp(pkt.filename, "END") == 0) {
+            printf("server: received END signal\n");
+            break;
+        }
 
-        //if the file doesn't exist or can't be open
-        if (!files[i]) {
-            perror("fopen");
+        printf("server: received packet %d from %s, lines %d to %d of %s\n",
+            pkt.packetNum,
+            inet_ntoa(((struct sockaddr_in*)&their_addr)->sin_addr),
+            pkt.start_line_number,
+            pkt.start_line_number + pkt.num_lines - 1,
+            pkt.filename);
+
+        //if the client resends prev ACk
+        //i.e if the client never got the server's prev ACK. 
+        //resend prev ack and don't add duplicate lines
+        if(pkt.packetNum == prevAck){
+            struct ack_packet ack; 
+            ack.acki = prevAck;
+
+            if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+                perror("server: sendto ack");
+                exit(1);
+            }
+            continue;
+        } else if(pkt.packetNum > prevAck + 1){
+            printf("packet from the future received? %d %d", pkt.packetNum, prevAck);
+            exit(2); //should be impossible with the way client and server are setup
+        } else if(pkt.packetNum < prevAck){
+            printf("server: received old packet: %d", pkt.packetNum);
+            continue; //assume it's an old packet that got lost in traffic and ignore it 
+        }
+
+        //check if the filename has been received before
+        int fileIndex = -1;
+        for (int i = 0; i < file_count; i++) {
+            if (strcmp(fileNames[i], pkt.filename) == 0) {
+                fileIndex = i; 
+                break;
+            }
+        }
+
+        //if it's a new filename, add it to the list and open a new file for it
+        if (fileIndex == -1 && file_count < MAXFILES) {
+            fileIndex = file_count;
+            snprintf(fileNames[fileIndex], sizeof(fileNames[fileIndex]), "%s", pkt.filename);
+            fileMap[fileIndex] = fopen(fileNames[fileIndex], "w+");
+            file_count++;  //increment the count of unique files
+        }
+
+        //add new lines to the correct file
+        for (int i = 0; i < pkt.num_lines; i++) {
+            fprintf(fileMap[fileIndex], "%s\n", pkt.lines[i]);
+        }
+        
+        //forces a save to memory 
+        fflush(fileMap[fileIndex]);
+
+        /*send ack packet*/
+        struct ack_packet ack;
+        ack.acki = ack_counter++;
+        prevAck++;
+
+        if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+            perror("server: sendto ack");
             exit(1);
         }
 
         
-        //determine how many lines in current file
-        numLines[i] = 0;
-        while (!feof(files[i])) {
+    }
+
+    //close all files
+    for (int i = 0; i < MAXFILES; i++) {
+        if (fileMap[i]) fclose(fileMap[i]);
+    }
+
+    //now that all the files were received, combine them into the file that will be sent back
+    FILE *final = fopen("combined.txt", "w+");
+
+    for (int i = 0; i < MAXFILES; i++) {
+        if (strlen(fileNames[i]) > 0) {
+            FILE *f = fopen(fileNames[i], "r");
+   
             char line[256];
 
-            if (fgets(line, sizeof(line), files[i])) {
-                numLines[i]++;
+            fprintf(final, "\n%s\n", fileNames[i]);
+            //insert lines of the current file into the final combined file
+            while (fgets(line, sizeof(line), f)) { 
+                fputs(line, final); 
             }
 
+            fclose(f);
         }
-
-        fseek(files[i], 0, SEEK_SET); //set pointer to beginning
-
-        sentLines[i] = 0;  //set the sent lines to 0 
     }
 
-    srand(time(NULL)); //seed the rng to the current time
-    int filesSent[MAXFILES] = {0};  //array to keep track of which files were fully sent
-    int total_files_sent = 0;  //array to keep track of how many files were sent
+    fclose(final);
 
-    while (total_files_sent < MAXFILES) {
+    //send the combined file to the client
+    final = fopen("combined.txt", "r");
 
-        int fileIndex = -1;
-        while (fileIndex == -1) {
+    char send_buf[512];
 
-            int random_file = rand() % MAXFILES;  //choose rand file
-            //protect against empty files and check if the file was fully sent yet
-            //if the file was fully sent, try another
-            //can be more efficient. Maybe optimize later
-            if (numLines[random_file] > 0 && !filesSent[random_file]) {
-                fileIndex = random_file;
-            }
-        }
-
-        //send 1-3 lines from the selected file
-        struct udp_packet pkt;
-        memset(&pkt, 0, sizeof(pkt));
-        snprintf(pkt.filename, sizeof(pkt.filename), "%s", fileNames[fileIndex]);
-
-        //set the start line. dependent on how many lines were already sent
-        pkt.start_line_number = sentLines[fileIndex];
-
-        //generate a random # from 1-3 to determine how many lines to send
-        //could optimize by capping it with the delta of lines sent and total lines in file
-        int lines_to_send = rand() % MAX_LINES_PER_PACKET + 1; 
-
-        int count = 0;
-        char line[256];
-
-        //nested loop to add the lines from the file to the packet 
-        while (count < lines_to_send && fgets(line, sizeof(line), files[fileIndex])) {
-            line[strcspn(line, "\n")] = 0; // remove newline
-            strncpy(pkt.lines[count], line, sizeof(pkt.lines[count])-1);
-            count++;
-        }
-
-        pkt.num_lines = count;
-
-        //sends the packet and throws an error if one occurs 
-        if (sendto(sockfd, &pkt, sizeof(pkt), 0, p->ai_addr, p->ai_addrlen) == -1) {
-            perror("sendto");
-            exit(1);
-        }
-
-        //increment the lines set var of curr file
-        sentLines[fileIndex] += count;
-
-        usleep(5000); //delay 
-        /*TODO: add logic to wait for an ACK packet before sending the next packet*/
-
-        //check and mark if the file was fully sent
-        if (sentLines[fileIndex] == numLines[fileIndex]) {
-            filesSent[fileIndex] = 1;
-            total_files_sent++;
-        } 
+    while (fgets(send_buf, sizeof(send_buf), final)) {
+        sendto(sockfd, send_buf, strlen(send_buf), 0,
+               (struct sockaddr *)&their_addr, addr_len);
     }
 
-    /* send the end packet */
-    struct udp_packet end_pkt;
-    memset(&end_pkt, 0, sizeof(end_pkt));
-    snprintf(end_pkt.filename, sizeof(end_pkt.filename), "END");
-    sendto(sockfd, &end_pkt, sizeof(end_pkt), 0, p->ai_addr, p->ai_addrlen);
+    //send DONE so the client knows when the communication is over
+    sendto(sockfd, "DONE", 4, 0, (struct sockaddr *)&their_addr, addr_len);
 
-    printf("client: finished sending files. Waiting to receive combined file...\n");
-
-    addr_len = sizeof their_addr;
-    char recv_buf[MAXBUFLEN];
-
-    FILE *combined = fopen("combined_from_server.txt", "w");
-
-    while (1) {
-
-        int numbytes = recvfrom(sockfd, recv_buf, MAXBUFLEN-1, 0,
-                            (struct sockaddr *)&their_addr, &addr_len);
-
-        recv_buf[numbytes] = '\0';
-
-        if (strcmp(recv_buf, "DONE") == 0) {
-            printf("client: received DONE signal, finished receiving file.\n");
-            break;
-        }
-        //write data to file 
-        fprintf(combined, "%s", recv_buf);
-    }
-
-    //close file and socket and free mem
-    fclose(combined);
-    freeaddrinfo(servinfo);
+    //close out file and socket and end program
+    fclose(final);
     close(sockfd);
-
-    printf("client: file received and saved as combiend_from_server.txt\n");
+    printf("server: finished and exiting\n");
 
     return 0;
 }
-
