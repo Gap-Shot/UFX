@@ -128,7 +128,7 @@ int main(void) {
             }
             continue;
         } else if(pkt.packetNum > prevAck + 1){
-            printf("packet from the future received? %d", pkt.packetNum);
+            printf("packet from the future received? %d %d", pkt.packetNum, prevAck);
             exit(2); //should be impossible with the way client and server are setup
         } else if(pkt.packetNum < prevAck){
             printf("server: received old packet: %d", pkt.packetNum);
@@ -169,6 +169,7 @@ int main(void) {
             perror("server: sendto ack");
             exit(1);
         }
+
         
     }
 
@@ -191,6 +192,7 @@ int main(void) {
             while (fgets(line, sizeof(line), f)) { 
                 fputs(line, final); 
             }
+
             fclose(f);
         }
     }
@@ -217,3 +219,4 @@ int main(void) {
 
     return 0;
 }
+
