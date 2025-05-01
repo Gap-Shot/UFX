@@ -52,7 +52,6 @@ int main(int argc, char *argv[]) {
     }
 
     memset(&hints, 0, sizeof hints);
-    //hints.ai_family = AF_UNSPEC;
     hints.ai_family = AF_INET;
     //UDP 
     hints.ai_socktype = SOCK_DGRAM;
@@ -200,10 +199,22 @@ int main(int argc, char *argv[]) {
     struct udp_packet end_pkt;
     memset(&end_pkt, 0, sizeof(end_pkt));
     snprintf(end_pkt.filename, sizeof(end_pkt.filename), "END");
-    sendto(sockfd, &end_pkt, sizeof(end_pkt), 0, p->ai_addr, p->ai_addrlen);
+    while(ack.acki != -2){
 
-    printf("client: All files sent. Waiting for server to send combined file.\n");
+        sendto(sockfd, &end_pkt, sizeof(end_pkt), 0, p->ai_addr, p->ai_addrlen);
 
+        printf("client: All files sent. Waiting for server to acknowledge and send the combined file.\n");
+        int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0,
+                                (struct sockaddr *)&their_addr, &addr_len);
+        if (numbytes == -1) {
+              printf("Timeout. resending packet# %d\n", pkt.packetNum);
+              continue;
+        } 
+        
+    }
+
+    printf("client: server acknowledged all files were sent. Awaiting combined file");
+    
     addr_len = sizeof their_addr;
     char recv_buf[MAXBUFLEN];
 
