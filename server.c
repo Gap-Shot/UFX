@@ -105,8 +105,7 @@ int main(void) {
         int numbytes = recvfrom(sockfd, &pkt, sizeof pkt, 0, (struct sockaddr *)&their_addr, &addr_len);
 
         if (numbytes == -1) { 
-            perror("recvfrom");
-            exit(1);
+            continue; //wait for the next packet. The client will keep resending
         }
         
         //end loop once an end packet is received
@@ -194,6 +193,7 @@ int main(void) {
     //sort fileNames[] to get files in order
     qsort(fileNames, numFiles, sizeof(fileNames[0]), compare_strings);
 
+    //fill file
     for (int i = 0; i < numFiles; i++) {
 
         if (strlen(fileNames[i]) > 0) {
@@ -222,15 +222,15 @@ int main(void) {
         struct udp_packet pkt;
         struct ack_packet ack;
         ack.acki = -1;
+        pkt.packetNum = currPacket;
         
         while (ack.acki != currPacket)
         { 
-            pkt.packetNum = currPacket
-
             sendto(sockfd, send_buf, strlen(send_buf), 0,
                  (struct sockaddr *)&their_addr, addr_len);
 
-            int numbytes = recvfrom(sockfd, &pkt, sizeof pkt, 0, (struct sockaddr *)&their_addr, &addr_len);
+                 int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0,
+                    (struct sockaddr *)&their_addr, &addr_len);
 
             if (numbytes == -1) {
                 printf("Timeout. resending packet# %d\n", pkt.packetNum);
