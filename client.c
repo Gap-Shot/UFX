@@ -27,7 +27,7 @@
 
 struct udp_packet {
     char filename[32];
-    int totalLines;
+    //int totalLines;
     int currentLineNum;
     int numIncomingLines;
     char lines[MAX_LINES_PER_PACKET][256];
@@ -38,22 +38,13 @@ struct ack_packet {
     int acki;
 };
 
-//returns pointer to address and allows for program to work with ipv4 and 6
-void *get_in_addr(struct sockaddr *sa) {
-    if (sa->sa_family == AF_INET)
-        return &(((struct sockaddr_in*)sa)->sin_addr); 
- 
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
 int main(int argc, char *argv[]) {
 
-    int sockfd; //socket file descriptor
-    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, 
-                                             //p is a pointer to iteratethrough servinfo
-    int rv;//return value for getaddrinfo. used for error checking
-    struct sockaddr_storage their_addr;//the address of the server
-    socklen_t addr_len; //size of server's address
+    int sockfd; 
+    struct addrinfo hints, *servinfo, *p;
+    int rv;
+    struct sockaddr_storage their_addr;
+    socklen_t addr_len; 
 
     if (argc != 2) {
         fprintf(stderr, "must supply server's ipaddress/hostname when executing (./client xxx.xxx.xxx.xxx\n");
@@ -61,8 +52,8 @@ int main(int argc, char *argv[]) {
     }
 
     memset(&hints, 0, sizeof hints);
-    //can be either ipv4 or 6 
-    hints.ai_family = AF_UNSPEC;
+    //hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_INET;
     //UDP 
     hints.ai_socktype = SOCK_DGRAM;
 
@@ -104,10 +95,9 @@ int main(int argc, char *argv[]) {
 
         files[i] = fopen(fileNames[i], "r");
 
-        //if the file doesn't exist or can't be open
         if (!files[i]) {
             perror("fopen");
-            exit(1);
+            exit(2);
         }
 
         
@@ -129,7 +119,7 @@ int main(int argc, char *argv[]) {
     srand(time(NULL)); //seed the rng to the current time
     int filesSent[numFiles] = {0};  //array to keep track of which files were fully sent
     int filesCompleted = 0;  //array to keep track of how many files were sent
-    int currPacket = 0;
+    int currPacket = 0; //index to keep track of how many packets were successfully sent by comparing to ACKs
 
     while (filesCompleted < numFiles) {
 
@@ -163,19 +153,19 @@ int main(int argc, char *argv[]) {
 
         //nested loop to add the lines from the file to the packet 
         while (i < lines_to_send && fgets(line, sizeof(line), files[fileIndex])) {
-            line[strcspn(line, "\n")] = 0; // remove newline
+            line[strcspn(line, "\n")] = 0;
             strncpy(pkt.lines[i], line, sizeof(pkt.lines[i])-1);
             i++;
         }
 
         pkt.numIncomingLines = i;
-
+        //ACK packet
         struct ack_packet ack;
         addr_len = sizeof their_addr;
-        ack.acki = -1;
+        ack.acki = -1; //set to -1 to guarentee the packet data is sent once
         //loop to resend packet until the server acknowledges it
         while(ack.acki != currPacket){
-            //send packet
+            //send/resend packet
             if (sendto(sockfd, &pkt, sizeof(pkt), 0, p->ai_addr, p->ai_addrlen) == -1) {
                 perror("sendto");
                 exit(1);
@@ -184,21 +174,21 @@ int main(int argc, char *argv[]) {
             int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0,
                                     (struct sockaddr *)&their_addr, &addr_len);
             if (numbytes == -1) {
-                printf("Timeout. resending %d\n", pkt.packetNum);
+                printf("Timeout. resending packet# %d\n", pkt.packetNum);
                 continue;
             }
-            //if the server somehow sends an ACK from a packet the client hasn't sent yet
-            //should be impossible given our code, unless another client sent packet(s) to the server
+            //if the server somehow sends an ACK from a packet the client hasn't sent yet, error out
+            //should be impossible since we are sending one at a time, unless another client sent packet(s) to the server
             if(ack.acki > currPacket){
                 printf("client: Server acknowledged a packet that wasn't sent yet?");
                 exit(1);
             }
-            printf("client: ACK received for %d\n", ack.acki);
+            printf("client: ACK received for packet# %d\n", ack.acki);
         }
-        //increment the lines set var of curr file
+        //increment the lines set var of current file
         sentLines[fileIndex] += i;
 
-        //check and mark if the file was fully sent
+        //check and docunent if the file was fully sent
         if (sentLines[fileIndex] == numLines[fileIndex]) {
             filesSent[fileIndex] = 1;
             filesCompleted++;
@@ -206,7 +196,7 @@ int main(int argc, char *argv[]) {
         currPacket++;
     }
 
-    /* send the end packet */
+    //send the end packet
     struct udp_packet end_pkt;
     memset(&end_pkt, 0, sizeof(end_pkt));
     snprintf(end_pkt.filename, sizeof(end_pkt.filename), "END");
@@ -218,7 +208,7 @@ int main(int argc, char *argv[]) {
     char recv_buf[MAXBUFLEN];
 
     FILE *combined = fopen("combined_from_server.txt", "w");
-
+    //receive and write lines to file until END packet is received 
     while (1) {
 
         int numbytes = recvfrom(sockfd, recv_buf, MAXBUFLEN-1, 0,
@@ -243,5 +233,4 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-
 
