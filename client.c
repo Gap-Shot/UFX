@@ -196,6 +196,7 @@ int main(int argc, char *argv[]) {
     }
 
     //send the end packet
+    struct ack_packet ack;
     struct udp_packet end_pkt;
     memset(&end_pkt, 0, sizeof(end_pkt));
     snprintf(end_pkt.filename, sizeof(end_pkt.filename), "END");
@@ -207,7 +208,7 @@ int main(int argc, char *argv[]) {
         int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0,
                                 (struct sockaddr *)&their_addr, &addr_len);
         if (numbytes == -1) {
-              printf("Timeout. resending packet# %d\n", pkt.packetNum);
+              printf("Timeout. resending END packet\n");
               continue;
         } 
         
