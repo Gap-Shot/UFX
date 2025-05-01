@@ -54,7 +54,6 @@ int main(void) {
     char fileNames[numFiles][32];
 
     memset(&hints, 0, sizeof hints);
-    //hints.ai_family = AF_UNSPEC;
     hints.ai_family = AF_INET;
     //UDP
     hints.ai_socktype = SOCK_DGRAM;
@@ -91,10 +90,17 @@ int main(void) {
     int file_count = 0; //track the number of unique files received
     static int prevAck = -1;
     static int ack_counter = 0;  
+    //set 500ms timeout
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 500000; 
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
     //infinite loop because files can be of any size, and each packet can only contain 3 lines 
     while (1) {
 
         struct udp_packet pkt;
+        struct ack_packet ack;
 
         int numbytes = recvfrom(sockfd, &pkt, sizeof pkt, 0, (struct sockaddr *)&their_addr, &addr_len);
 
@@ -106,6 +112,12 @@ int main(void) {
         //end loop once an end packet is received
         if (strcmp(pkt.filename, "END") == 0) {
             printf("server: received END signal\n");
+            ack.acki = -2;
+
+            if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+                perror("server: sendto ack");
+                exit(1);
+            }
             break;
         }
 
@@ -161,8 +173,6 @@ int main(void) {
         //forces a save to memory 
         fflush(fileMap[fileIndex]);
 
-        //send ACK
-        struct ack_packet ack;
         ack.acki = ack_counter++;
         prevAck++;
 
@@ -185,6 +195,7 @@ int main(void) {
     qsort(fileNames, numFiles, sizeof(fileNames[0]), compare_strings);
 
     for (int i = 0; i < numFiles; i++) {
+
         if (strlen(fileNames[i]) > 0) {
             FILE *f = fopen(fileNames[i], "r");
    
@@ -206,10 +217,34 @@ int main(void) {
     final = fopen("combined.txt", "r");
 
     char send_buf[512];
-
+    int currPacket = 0;
     while (fgets(send_buf, sizeof(send_buf), final)) {
-        sendto(sockfd, send_buf, strlen(send_buf), 0,
-               (struct sockaddr *)&their_addr, addr_len);
+        struct udp_packet pkt;
+        struct ack_packet ack;
+        ack.acki = -1;
+        
+        while (ack.acki != currPacket)
+        { 
+            pkt.packetNum = currPacket
+
+            sendto(sockfd, send_buf, strlen(send_buf), 0,
+                 (struct sockaddr *)&their_addr, addr_len);
+
+            int numbytes = recvfrom(sockfd, &pkt, sizeof pkt, 0, (struct sockaddr *)&their_addr, &addr_len);
+
+            if (numbytes == -1) {
+                printf("Timeout. resending packet# %d\n", pkt.packetNum);
+                continue;
+            }
+
+            if(ack.acki > currPacket){
+                printf("server: client acknowledged a packet that wasn't sent yet?");
+                exit(1);
+            }
+            printf("server: ACK received for packet# %d\n", ack.acki);
+        }
+        currPacket++;
+        
     }
 
     //send DONE so the client knows when the communication is over
