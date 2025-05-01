@@ -28,7 +28,7 @@
 
 struct udp_packet {
     char filename[32];
-    int totalLines; 
+    //int totalLines; 
     int currentLineNum;
     int numIncomingLines;
     char lines[MAX_LINES_PER_PACKET][256]; 
@@ -38,36 +38,28 @@ struct udp_packet {
 struct ack_packet {
     int acki;
 };
-
-//returns pointer to address and allows for program to work with ipv4 and 6
-void *get_in_addr(struct sockaddr *sa) {
-    if (sa->sa_family == AF_INET) 
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-        
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+//will be used with qsort to sort files by name
+int compare_strings(const void *a, const void *b) {
+    return strcmp((const char *)a, (const char *)b);
 }
 
 int main(void) {
 
     int sockfd; 
-    struct addrinfo hints, *servinfo, *p; //hints are params to giveaddrinfo, servinfo is a linkedlist of possible addresses, 
-                                        //p is a pointer to iterate through servinfo
-    struct sockaddr_storage their_addr; //the client's address
-    socklen_t addr_len; //size of client address
-    int rv; //return value for getaddrinfo. used for error checking
-
+    struct addrinfo hints, *servinfo, *p; 
+    struct sockaddr_storage their_addr; 
+    socklen_t addr_len; 
+    int rv; 
     FILE *fileMap[numFiles] = {NULL};
     char fileNames[numFiles][32];
 
     memset(&hints, 0, sizeof hints);
-    //can be either ipv4 or 6
-    hints.ai_family = AF_UNSPEC; 
+    //hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_INET;
     //UDP
     hints.ai_socktype = SOCK_DGRAM;
-    //passive
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_flags = AI_PASSIVE; //use my IP
 
-    //error handling
     if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         return 1;
@@ -120,12 +112,11 @@ int main(void) {
         printf("server: received packet %d from %s, lines %d to %d of %s\n",
             pkt.packetNum,
             inet_ntoa(((struct sockaddr_in*)&their_addr)->sin_addr),
-            pkt.currentLineNum,
-            pkt.currentLineNum + pkt.numIncomingLines
-     - 1,
+            pkt.currentLineNum,pkt.currentLineNum + pkt.numIncomingLines- 1,
             pkt.filename);
 
-        //if the client resends prev ACk
+        //if the client resends previously received packet, resend prev ack...
+        //assuming the previous ack got lost in transmission
         //i.e if the client never got the server's prev ACK. 
         //resend prev ack and don't add duplicate lines
         if(pkt.packetNum == prevAck){
@@ -139,8 +130,8 @@ int main(void) {
             continue;
         } else if(pkt.packetNum > prevAck + 1){
             printf("packet from the future received? %d %d", pkt.packetNum, prevAck);
-            exit(2); //should be impossible with the way client and server are setup
-        } else if(pkt.packetNum < prevAck){
+            exit(2); //should be impossible since one packet is sent at a time
+        } else if(pkt.packetNum < prevAck){//if a packet is received that is 2 or more iterations old
             printf("server: received old packet: %d", pkt.packetNum);
             continue; //assume it's an old packet that got lost in traffic and ignore it 
         }
@@ -163,15 +154,14 @@ int main(void) {
         }
 
         //add new lines to the correct file
-        for (int i = 0; i < pkt.numIncomingLines
-; i++) {
+        for (int i = 0; i < pkt.numIncomingLines; i++) {
             fprintf(fileMap[fileIndex], "%s\n", pkt.lines[i]);
         }
         
         //forces a save to memory 
         fflush(fileMap[fileIndex]);
 
-        /*send ack packet*/
+        //send ACK
         struct ack_packet ack;
         ack.acki = ack_counter++;
         prevAck++;
@@ -191,6 +181,8 @@ int main(void) {
 
     //now that all the files were received, combine them into the file that will be sent back
     FILE *final = fopen("combined.txt", "w+");
+    //sort fileNames[] to get files in order
+    qsort(fileNames, numFiles, sizeof(fileNames[0]), compare_strings);
 
     for (int i = 0; i < numFiles; i++) {
         if (strlen(fileNames[i]) > 0) {
@@ -230,4 +222,3 @@ int main(void) {
 
     return 0;
 }
-
