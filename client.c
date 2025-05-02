@@ -4,7 +4,7 @@
     Sends 10 files to server using UDP. 
     Sends 1-3 lines at a time from a random
     file. 
-    Uses ACKs to make sure everything is 
+    Uses ACKs and Seq#s to make sure everything is 
     received in order.
 */
 
