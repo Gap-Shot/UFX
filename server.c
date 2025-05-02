@@ -4,7 +4,7 @@
     Takes 10 files from the client. Then,
     combines them into one file, in order 
     and sends the combined file to the client.
-    Uses ACKs to make sure everything is received
+    Uses ACKs and Seq#s to make sure everything is received
     in order.
 */
 
@@ -113,7 +113,7 @@ int main(void) {
         int numbytes = recvfrom(sockfd, &pkt, sizeof pkt, 0, (struct sockaddr *)&their_addr, &addr_len);
 
         if (numbytes == -1) { 
-            printf("timeout. waiting for packet to be\n");
+            printf("timeout. waiting for packet to be resent \n");
             continue; //wait for the next packet. The client will keep resending
         }
         
