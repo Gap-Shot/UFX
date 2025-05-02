@@ -21,7 +21,7 @@
 #include <time.h>
 
 #define SERVERPORT "7777"
-#define MAXBUFLEN 65536
+#define MAXBUFLEN 1024
 #define numFiles 10
 #define MAX_LINES_PER_PACKET 3
 
@@ -36,6 +36,11 @@ struct udp_packet {
 
 struct ack_packet {
     int acki;
+};
+
+struct combined_data_packet {
+    int packetNum;
+    char data[MAXBUFLEN];
 };
 
 int main(int argc, char *argv[]) {
@@ -90,7 +95,7 @@ int main(int argc, char *argv[]) {
 
     for (int i = 0; i < numFiles; i++) {
 
-        snprintf(fileNames[i], sizeof(fileNames[i]), "file_%d.txt", i+1);
+        snprintf(fileNames[i], sizeof(fileNames[i]), "file_%d.txt", i);
 
         files[i] = fopen(fileNames[i], "r");
 
@@ -217,32 +222,56 @@ int main(int argc, char *argv[]) {
     printf("client: server acknowledged all files were sent. Awaiting combined file");
     
     addr_len = sizeof their_addr;
-    char recv_buf[MAXBUFLEN];
 
+    struct combined_data_packet recv_pkt;
+    //struct ack_packet ack;
     FILE *combined = fopen("combined_from_server.txt", "w");
-    //receive and write lines to file until END packet is received 
+    
+    //receive and write lines to file until END packet is received
     while (1) {
+        int numbytes = recvfrom(sockfd, &recv_pkt, sizeof(recv_pkt), 0,
+                                (struct sockaddr *)&their_addr, &addr_len);
 
-        int numbytes = recvfrom(sockfd, recv_buf, MAXBUFLEN-1, 0,
-                            (struct sockaddr *)&their_addr, &addr_len);
+        if (numbytes == -1) {
+            continue; //wait for the next packet. The server will keep resending
+        }
 
-        recv_buf[numbytes] = '\0';
+        recv_pkt.data[numbytes - sizeof(int)] = '\0';
 
-        if (strcmp(recv_buf, "DONE") == 0) {
-            printf("client: received DONE signal, finished receiving file.\n");
+        //send an ACK for the received packet
+        ack.acki = recv_pkt.packetNum;
+        if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+            perror("client: sendto ack");
+            exit(1);
+        }
+
+        //end loop at END signal
+        if (recv_pkt.packetNum == -1) {
+            printf("client: received END signal, finished receiving file.\n");
+            time_t start_time = time(NULL);
+            while (time(NULL) - start_time < 1) { //wait
+                int numbytes = recvfrom(sockfd, &recv_pkt, sizeof recv_pkt, 0,
+                                        (struct sockaddr *)&their_addr, &addr_len);
+                if (numbytes != -1 && recv_pkt.packetNum == -1) {
+                    //resend ACK
+                    ack.acki = -2;
+                    sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len);
+                }
+            }
             break;
         }
-        
-        fprintf(combined, "%s", recv_buf);
+
+        printf("client: received packetNum %d\n", recv_pkt.packetNum);
+
+        fprintf(combined, "%s", recv_pkt.data);
     }
 
-    //close file and socket and free mem
+    //close file and socket and free memory
     fclose(combined);
     freeaddrinfo(servinfo);
     close(sockfd);
 
-    printf("client: file received and saved as combiend_from_server.txt\n");
+    printf("client: file received and saved as combined_from_server.txt\n");
 
     return 0;
 }
-
