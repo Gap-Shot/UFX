@@ -262,8 +262,14 @@ int main(int argc, char *argv[]) {
         }
 
         printf("client: received packetNum %d\n", recv_pkt.packetNum);
-
-        fprintf(combined, "%s", recv_pkt.data);
+        if (currPacket == recv_pkt.packetNum)
+        {
+            printf("client: writing in packet# %d to file\n", recv_pkt.packetNum);
+            fprintf(combined, "%s", recv_pkt.data);
+            currPacket++;
+        }
+        
+        
     }
 
     //close file and socket and free memory
