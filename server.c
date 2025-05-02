@@ -18,11 +18,12 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
-#include <sys/wait.h> 
+#include <sys/wait.h> cat com
 #include <signal.h>
+#include <time.h>
 
 #define PORT "7777"    
-#define MAXBUFLEN 65536  
+#define MAXBUFLEN 1024  
 #define numFiles 10
 #define MAX_LINES_PER_PACKET 3
 
@@ -38,6 +39,12 @@ struct udp_packet {
 struct ack_packet {
     int acki;
 };
+
+struct combined_data_packet {
+    int packetNum;
+    char data[MAXBUFLEN];
+};
+
 //will be used with qsort to sort files by name
 int compare_strings(const void *a, const void *b) {
     return strcmp((const char *)a, (const char *)b);
@@ -117,6 +124,20 @@ int main(void) {
                 perror("server: sendto ack");
                 exit(1);
             }
+                //loop to wait to see if client resends end packet.
+                //if the client resends it, that means it didn't receive the server's ACK for the end packet
+                //so resend the ACK for the end packet
+                time_t start_time = time(NULL);
+                while (time(NULL) - start_time < 1) { //wait
+                    struct udp_packet end_retry;
+                    int numbytes = recvfrom(sockfd, &end_retry, sizeof end_retry, 0,
+                                            (struct sockaddr *)&their_addr, &addr_len);
+                    if (numbytes != -1 && strcmp(end_retry.filename, "END") == 0) {
+                        //resend ACK
+                        ack.acki = -2;
+                        sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len);
+                    }
+                }
             break;
         }
 
@@ -134,10 +155,10 @@ int main(void) {
             struct ack_packet ack; 
             ack.acki = prevAck;
 
-            if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
-                perror("server: sendto ack");
-                exit(1);
-            }
+        if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+            perror("server: sendto ack");
+            exit(1);
+        }
             continue;
         } else if(pkt.packetNum > prevAck + 1){
             printf("packet from the future received? %d %d", pkt.packetNum, prevAck);
@@ -216,41 +237,67 @@ int main(void) {
     //send the combined file to the client
     final = fopen("combined.txt", "r");
 
-    char send_buf[512];
+    struct combined_data_packet send_pkt;
+    struct ack_packet ack;
     int currPacket = 0;
-    while (fgets(send_buf, sizeof(send_buf), final)) {
-        struct udp_packet pkt;
-        struct ack_packet ack;
-        ack.acki = -1;
-        pkt.packetNum = currPacket;
-        
-        while (ack.acki != currPacket)
-        { 
-            sendto(sockfd, send_buf, strlen(send_buf), 0,
-                 (struct sockaddr *)&their_addr, addr_len);
-
-                 int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0,
-                    (struct sockaddr *)&their_addr, &addr_len);
-
-            if (numbytes == -1) {
-                printf("Timeout. resending packet# %d\n", pkt.packetNum);
-                continue;
-            }
-
-            if(ack.acki > currPacket){
-                printf("server: client acknowledged a packet that wasn't sent yet?");
+    ack.acki = -1;
+    while (fgets(send_pkt.data, sizeof(send_pkt.data) - sizeof(int), final)) {
+        send_pkt.packetNum = currPacket; 
+    
+        while (ack.acki != currPacket) {
+            printf("server: sending packet# %d ACK rcvd: %d \n", send_pkt.packetNum, ack.acki);
+            printf("currpacket is %d\n", currPacket);
+            // Send the packet
+            if (sendto(sockfd, &send_pkt, sizeof(send_pkt), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+                perror("server: sendto");
                 exit(1);
             }
+
+            //ack.acki = -1;
+    
+            // Wait for ACK
+            int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, &addr_len);
+            if (numbytes == -1) {
+                printf("Timeout. Resending packet# %d\n", send_pkt.packetNum);
+                continue;
+            }
+    
+            if (ack.acki > currPacket) {
+                printf("server: client acknowledged a packet that wasn't sent yet?\n");
+                exit(1);
+            }else if (ack.acki == currPacket - 1)
+            {
+                printf("server: client acknowledged a packet that was already sent\n");
+                continue; //ignore the ack, it was already received previously
+            }  
+    
             printf("server: ACK received for packet# %d\n", ack.acki);
         }
+    
         currPacket++;
-        
     }
-
-    //send DONE so the client knows when the communication is over
-    sendto(sockfd, "DONE", 4, 0, (struct sockaddr *)&their_addr, addr_len);
-
-    //close out file and socket and end program
+    
+    //send the END packet
+    send_pkt.packetNum = -1;
+    memset(send_pkt.data, 0, sizeof(send_pkt.data)); // Clear the data field
+    while (1) {
+        if (sendto(sockfd, &send_pkt, sizeof(send_pkt), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+            perror("server: sendto END");
+            exit(1);
+        }
+    
+        int numbytes = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, &addr_len);
+        if (numbytes == -1) {
+            printf("Timeout. Resending END packet\n");
+            continue;
+        }
+    
+        if (ack.acki == -1) {
+            printf("server: client acknowledged END packet\n");
+            break;
+        }
+    }
+    
     fclose(final);
     close(sockfd);
     printf("server: finished and exiting\n");
