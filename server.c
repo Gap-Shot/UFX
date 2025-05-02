@@ -18,7 +18,7 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
-#include <sys/wait.h> cat com
+#include <sys/wait.h> 
 #include <signal.h>
 #include <time.h>
 
@@ -102,6 +102,7 @@ int main(void) {
     tv.tv_sec = 0;
     tv.tv_usec = 500000; 
     setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+    int currPacket = 0;
 
     //infinite loop because files can be of any size, and each packet can only contain 3 lines 
     while (1) {
@@ -112,6 +113,7 @@ int main(void) {
         int numbytes = recvfrom(sockfd, &pkt, sizeof pkt, 0, (struct sockaddr *)&their_addr, &addr_len);
 
         if (numbytes == -1) { 
+            printf("timeout. waiting for packet to be\n");
             continue; //wait for the next packet. The client will keep resending
         }
         
@@ -155,10 +157,10 @@ int main(void) {
             struct ack_packet ack; 
             ack.acki = prevAck;
 
-        if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
-            perror("server: sendto ack");
-            exit(1);
-        }
+            if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+                perror("server: sendto ack");
+                exit(1);
+            }
             continue;
         } else if(pkt.packetNum > prevAck + 1){
             printf("packet from the future received? %d %d", pkt.packetNum, prevAck);
@@ -186,19 +188,20 @@ int main(void) {
         }
 
         //add new lines to the correct file
-        for (int i = 0; i < pkt.numIncomingLines; i++) {
-            fprintf(fileMap[fileIndex], "%s\n", pkt.lines[i]);
-        }
+        if(pkt.packetNum == currPacket){
+            for (int i = 0; i < pkt.numIncomingLines; i++) {
+                fprintf(fileMap[fileIndex], "%s\n", pkt.lines[i]);
+            }
+            //forces a save to memory 
+            fflush(fileMap[fileIndex]);
+            currPacket++;
+            ack.acki = ack_counter++;
+            prevAck++;
         
-        //forces a save to memory 
-        fflush(fileMap[fileIndex]);
-
-        ack.acki = ack_counter++;
-        prevAck++;
-
-        if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
-            perror("server: sendto ack");
-            exit(1);
+            if (sendto(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
+                perror("server: sendto ack");
+                exit(1);
+            }
         }
 
         
@@ -239,14 +242,14 @@ int main(void) {
 
     struct combined_data_packet send_pkt;
     struct ack_packet ack;
-    int currPacket = 0;
+    //int currPacket = ack_counter+1; //start at the next packet number in case of reordered packets
     ack.acki = -1;
     while (fgets(send_pkt.data, sizeof(send_pkt.data) - sizeof(int), final)) {
         send_pkt.packetNum = currPacket; 
     
         while (ack.acki != currPacket) {
-            printf("server: sending packet# %d ACK rcvd: %d \n", send_pkt.packetNum, ack.acki);
-            printf("currpacket is %d\n", currPacket);
+            //printf("server: sending packet# %d ACK rcvd: %d \n", send_pkt.packetNum, ack.acki);
+            //printf("currpacket is %d\n", currPacket);
             // Send the packet
             if (sendto(sockfd, &send_pkt, sizeof(send_pkt), 0, (struct sockaddr *)&their_addr, addr_len) == -1) {
                 perror("server: sendto");
